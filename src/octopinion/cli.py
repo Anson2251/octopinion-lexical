@@ -6,6 +6,7 @@ import sys
 import json
 from typing import List
 import torch
+from tqdm import tqdm
 
 from .config import LexicalConfig
 from .system import LexicalSystem
@@ -25,11 +26,17 @@ Examples:
   # Encode text to syllable sequence
   octopinion encode "fish" --model model.pt
 
-  # Decode syllable sequence to vector
+  # Decode syllable sequence to closest word
   octopinion decode 3,7,2,1 --model model.pt
+
+  # Decode with custom vocabulary
+  octopinion decode 3,7,2,1 --model model.pt --vocabulary words.txt
 
   # Interactive mode
   octopinion interactive --model model.pt
+
+  # Interactive mode with vocabulary
+  octopinion interactive --model model.pt --vocabulary words.txt
 
   # Analyze codebook
   octopinion analyze --model model.pt
@@ -64,7 +71,7 @@ Examples:
     train_parser.add_argument(
         "--api-batch-size",
         type=int,
-        default=10,
+        default=30,
         help="Batch size for API calls (default: 10)",
     )
     train_parser.add_argument("--api-token", help="SiliconFlow API token (or set SILICONFLOW_API_TOKEN)")
@@ -79,6 +86,8 @@ Examples:
     decode_parser = subparsers.add_parser("decode", help="Decode syllable sequence")
     decode_parser.add_argument("sequence", help='Syllable sequence (comma-separated indices, e.g., "3,7,2,1")')
     decode_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+    decode_parser.add_argument("--api-token", help="SiliconFlow API token")
+    decode_parser.add_argument("--vocabulary", "-v", help="Path to vocabulary file (one word per line)")
     decode_parser.add_argument(
         "--output-format",
         "-f",
@@ -91,10 +100,19 @@ Examples:
     interactive_parser = subparsers.add_parser("interactive", help="Interactive mode")
     interactive_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
     interactive_parser.add_argument("--api-token", help="SiliconFlow API token")
+    interactive_parser.add_argument("--vocabulary", "-v", help="Path to vocabulary file (one word per line)")
 
     # Analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze trained codebook")
     analyze_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+
+    # Export codebook words command
+    export_parser = subparsers.add_parser("export-codebook", help="Export words for each codebook item")
+    export_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+    export_parser.add_argument("--vocabulary", "-v", required=True, help="Path to vocabulary file (one word per line)")
+    export_parser.add_argument("--top-k", "-k", type=int, default=10, help="Number of words per codebook item")
+    export_parser.add_argument("--output", "-o", help="Output JSON file (default: print to stdout)")
+    export_parser.add_argument("--api-token", help="SiliconFlow API token")
 
     # Vocabulary command
     vocab_parser = subparsers.add_parser("vocabulary", help="Generate vocabulary from corpus")
@@ -107,6 +125,12 @@ Examples:
     demo_parser = subparsers.add_parser("demo", help="Run demo with synthetic data")
     demo_parser.add_argument("--codebook-size", "-s", type=int, default=26, help="Codebook size")
     demo_parser.add_argument("--epochs", "-e", type=int, default=100, help="Training epochs")
+
+    # Cache command
+    cache_parser = subparsers.add_parser("cache", help="Manage embedding cache")
+    cache_parser.add_argument("--stats", action="store_true", help="Show cache statistics")
+    cache_parser.add_argument("--clear", action="store_true", help="Clear cache")
+    cache_parser.add_argument("--model", default="BAAI/bge-large-zh-v1.5", help="Embedding model")
 
     return parser
 
@@ -193,7 +217,16 @@ def cmd_decode(args):
     print("=" * 60)
 
     # Load system
-    system = LexicalSystem.load(args.model)
+    api_token = args.api_token or os.getenv("SILICONFLOW_API_TOKEN")
+    system = LexicalSystem.load(args.model, api_token)
+
+    # Load vocabulary if provided
+    vocabulary = None
+    if args.vocabulary:
+        print(f"\nLoading vocabulary from {args.vocabulary}...")
+        with open(args.vocabulary, "r", encoding="utf-8") as f:
+            vocabulary = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(vocabulary)} words")
 
     # Parse sequence
     try:
@@ -203,19 +236,23 @@ def cmd_decode(args):
         return 1
 
     print(f"\nDecoding sequence: {sequence}")
+    print(f"Word form: {system.sequence_to_string(sequence)}")
 
     # Decode
     try:
-        vector = system.decode_sequence(sequence)
-        word = system.sequence_to_string(sequence)
+        result = system.decode_to_text(sequence, vocabulary=vocabulary)
 
-        print(f"\nWord form: {word}")
-        print(f"Vector shape: {vector.shape}")
-        print(f"Vector norm: {torch.norm(vector):.4f}")
+        print(f"\nClosest match: {result['word']}")
+        print(f"Similarity: {result['similarity']:.4f}")
+        print(f"Vector norm: {torch.norm(result['vector']):.4f}")
+
+        print("\nTop 5 matches:")
+        for word, sim in result["all_words"][:5]:
+            print(f"  {word}: {sim:.4f}")
 
         if args.output_format == "vector":
             print(f"\nVector values:")
-            print(vector.tolist())
+            print(result["vector"].tolist())
 
     except Exception as e:
         print(f"Error: {e}")
@@ -233,6 +270,14 @@ def cmd_interactive(args):
     # Load system
     api_token = args.api_token or os.getenv("SILICONFLOW_API_TOKEN")
     system = LexicalSystem.load(args.model, api_token)
+
+    # Load vocabulary if provided
+    vocabulary = None
+    if args.vocabulary:
+        print(f"\nLoading vocabulary from {args.vocabulary}...")
+        with open(args.vocabulary, "r", encoding="utf-8") as f:
+            vocabulary = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(vocabulary)} words")
 
     print("\nCommands:")
     print("  encode <text>  - Encode text to syllables")
@@ -269,10 +314,13 @@ def cmd_interactive(args):
             elif cmd == "decode":
                 try:
                     sequence = [int(x.strip()) for x in arg.split(",")]
-                    vector = system.decode_sequence(sequence)
-                    word = system.sequence_to_string(sequence)
-                    print(f"  Word: {word}")
-                    print(f"  Vector norm: {torch.norm(vector):.4f}")
+                    result = system.decode_to_text(sequence, vocabulary=vocabulary)
+                    print(f"  Word: {result['word']}")
+                    print(f"  Similarity: {result['similarity']:.4f}")
+                    print(f"  Vector norm: {torch.norm(result['vector']):.4f}")
+                    print(f"  Top 5 matches:")
+                    for word, sim in result["all_words"][:5]:
+                        print(f"    {word}: {sim:.4f}")
                 except Exception as e:
                     print(f"  Error: {e}")
 
@@ -316,6 +364,48 @@ def cmd_analyze(args):
         print("  Codebook vectors have moderate overlap")
     else:
         print("  Codebook vectors are highly similar (may need more training)")
+
+    return 0
+
+
+def cmd_export_codebook(args):
+    """Export codebook words command"""
+    import json
+    from .system import LexicalSystem
+
+    print("=" * 60)
+    print("Octopinion - Export Codebook Words")
+    print("=" * 60)
+
+    # Load vocabulary
+    print(f"\nLoading vocabulary from {args.vocabulary}...")
+    with open(args.vocabulary, "r", encoding="utf-8") as f:
+        vocabulary = [line.strip() for line in f if line.strip()]
+    print(f"Loaded {len(vocabulary)} words")
+
+    # Set API token if provided
+    if args.api_token:
+        import os
+
+        os.environ["SILICONFLOW_API_TOKEN"] = args.api_token
+
+    # Load system
+    print(f"\nLoading model from {args.model}...")
+    system = LexicalSystem.load(args.model)
+
+    # Export codebook words
+    print(f"\nFinding top {args.top_k} words for each codebook item...")
+    results = system.export_codebook_words(vocabulary, top_k=args.top_k, show_progress=True)
+
+    # Output results
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        print(f"\nResults saved to {args.output}")
+    else:
+        print("\nCodebook Words:")
+        for idx, words in results.items():
+            print(f"  [{idx}]: {', '.join([w['word'] for w in words])}")
 
     return 0
 
@@ -425,15 +515,12 @@ def cmd_demo(args):
 
     # Train
     print(f"\nTraining codebook ({config.codebook_size} syllables)...")
-    optimizer = torch.optim.Adam(system.learner.parameters(), lr=1e-3)
+    optimizer = torch.optim.SGD(system.learner.parameters(), lr=config.learning_rate, momentum=config.momentum)
 
-    for epoch in range(args.epochs):
+    for epoch in tqdm(range(args.epochs), desc="Training"):
         indices = torch.randperm(num_concepts)[:32]
         batch = structured_corpus[indices]
         metrics = system.learner.train_step(batch, optimizer)
-
-        if (epoch + 1) % 20 == 0:
-            print(f"Epoch {epoch + 1}/{args.epochs} - Loss: {metrics['loss']:.6f}, Temp: {metrics['temperature']:.4f}")
 
     # Initialize encoder/decoder
     system.encoder = LexicalEncoder(config, system.learner.codebook)
@@ -500,6 +587,34 @@ def cmd_demo(args):
     return 0
 
 
+def cmd_cache(args):
+    """Cache management command"""
+    from .embedder import SiliconFlowEmbedding
+
+    print("=" * 60)
+    print("Octopinion - Cache Management")
+    print("=" * 60)
+
+    # Create embedder to access cache
+    embedder = SiliconFlowEmbedding(model=args.model)
+
+    if args.stats:
+        print("\nCache Statistics:")
+        stats = embedder.cache_stats()
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
+
+    if args.clear:
+        print("\nClearing cache...")
+        embedder.clear_cache(args.model)
+        print("Cache cleared!")
+
+    if not args.stats and not args.clear:
+        print("\nUse --stats to show cache statistics or --clear to clear cache")
+
+    return 0
+
+
 def main():
     """Main entry point"""
     parser = create_parser()
@@ -516,8 +631,10 @@ def main():
         "decode": cmd_decode,
         "interactive": cmd_interactive,
         "analyze": cmd_analyze,
+        "export-codebook": cmd_export_codebook,
         "vocabulary": cmd_vocabulary,
         "demo": cmd_demo,
+        "cache": cmd_cache,
     }
 
     if args.command in commands:

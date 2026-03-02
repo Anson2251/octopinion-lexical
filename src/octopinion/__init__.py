@@ -21,6 +21,7 @@ from .codebook import Codebook
 from .encoder import LexicalEncoder
 from .decoder import LexicalDecoder
 from .learner import CodebookLearner
+from .cache import EmbeddingCache
 
 __all__ = [
     "LexicalConfig",
@@ -30,4 +31,5 @@ __all__ = [
     "LexicalEncoder",
     "LexicalDecoder",
     "CodebookLearner",
+    "EmbeddingCache",
 ]

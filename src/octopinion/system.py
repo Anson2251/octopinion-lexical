@@ -5,6 +5,7 @@ Main Lexical System - integrates all components
 import torch
 import numpy as np
 from typing import List, Dict, Any, Optional
+from tqdm import tqdm
 from .config import LexicalConfig
 from .embedder import SiliconFlowEmbedding
 from .codebook import Codebook
@@ -21,7 +22,7 @@ class LexicalSystem:
 
     def __init__(self, config: Optional[LexicalConfig] = None, api_token: Optional[str] = None):
         self.config = config or LexicalConfig()
-        self.embedder = SiliconFlowEmbedding(api_token)
+        self.embedder = SiliconFlowEmbedding(api_token, model=self.config.api_model)
 
         # Initialize codebook learner (which includes codebook)
         self.learner = CodebookLearner(self.config)
@@ -69,6 +70,47 @@ class LexicalSystem:
 
         return self.decoder.decode(sequence)
 
+    def decode_to_text(self, sequence: List[int], vocabulary: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Decode syllable sequence to closest text word.
+
+        Args:
+            sequence: List of syllable indices
+            vocabulary: Optional list of words to search from. If None, uses cached embeddings.
+
+        Returns:
+            Dictionary with decoded vector and closest word info
+        """
+        vector = self.decode_sequence(sequence)
+
+        if vocabulary:
+            embeddings = self.embedder.get_embeddings_batch(vocabulary, show_progress=False)
+            vocab_matrix = torch.stack(embeddings)
+            vocab_matrix = vocab_matrix / torch.norm(vocab_matrix, dim=1, keepdim=True)
+        else:
+            cached = self.embedder.cache.get_all()
+            if not cached:
+                raise ValueError("No cached embeddings found. Provide a vocabulary or train with a corpus first.")
+            vocabulary = [text for text, _ in cached]
+            vocab_matrix = torch.stack([emb for _, emb in cached])
+
+        vector_normalized = vector / torch.norm(vector)
+        similarities = torch.mm(vector_normalized.view(1, -1), vocab_matrix.t()).squeeze()
+        best_idx = similarities.argmax().item()
+        best_word = vocabulary[best_idx]
+        best_similarity = similarities[best_idx].item()
+
+        return {
+            "vector": vector,
+            "word": best_word,
+            "similarity": best_similarity,
+            "all_words": sorted(
+                [(vocabulary[i], similarities[i].item()) for i in range(len(vocabulary))],
+                key=lambda x: x[1],
+                reverse=True,
+            )[:10],
+        }
+
     def sequence_to_string(self, sequence: List[int]) -> str:
         """Convert syllable sequence to human-readable string"""
         return "-".join(f"S{i}" for i in sequence)
@@ -104,15 +146,19 @@ class LexicalSystem:
         # Convert to tensor
         embeddings_tensor = torch.stack(embeddings)
 
-        # Setup optimizer
-        optimizer = torch.optim.Adam(self.learner.parameters(), lr=self.config.learning_rate)
+        # Setup optimizer (SGD with momentum)
+        optimizer = torch.optim.SGD(
+            self.learner.parameters(), lr=self.config.learning_rate, momentum=self.config.momentum
+        )
 
         # Training loop
         if verbose:
             print(f"\nTraining for {epochs} epochs...")
         dataset_size = len(embeddings_tensor)
 
-        for epoch in range(epochs):
+        epoch_range = tqdm(range(epochs), desc="Training") if verbose else range(epochs)
+
+        for epoch in epoch_range:
             # Shuffle data
             indices = torch.randperm(dataset_size)
             total_loss = 0
@@ -130,9 +176,9 @@ class LexicalSystem:
 
             avg_loss = total_loss / num_batches
 
-            if verbose and ((epoch + 1) % 10 == 0 or epoch == 0):
+            if verbose:
                 temp = last_metrics["temperature"] if last_metrics else 0.0
-                print(f"Epoch {epoch + 1}/{epochs} - Loss: {avg_loss:.6f}, Temp: {temp:.4f}")
+                epoch_range.set_postfix(loss=f"{avg_loss:.4f}", temp=f"{temp:.2f}")
 
         # Create encoder/decoder after training
         self.encoder = LexicalEncoder(self.config, self.learner.codebook)
@@ -179,6 +225,48 @@ class LexicalSystem:
                 "min_similarity": float(similarities[mask].min()),
                 "max_similarity": float(similarities[mask].max()),
             }
+
+    def export_codebook_words(
+        self, vocabulary: List[str], top_k: int = 10, show_progress: bool = False
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """
+        Export words that correspond to each codebook item.
+
+        Uses cosine similarity to find the closest words in the vocabulary
+        to each codebook vector.
+
+        Args:
+            vocabulary: List of words to search from
+            top_k: Number of closest words to return per codebook item
+            show_progress: Whether to show progress bar
+
+        Returns:
+            Dict mapping codebook index to list of {word, similarity} dicts
+        """
+        if not vocabulary:
+            raise ValueError("Vocabulary cannot be empty")
+
+        if show_progress:
+            print(f"Getting embeddings for {len(vocabulary)} vocabulary words...")
+
+        vocab_embeddings = self.embedder.get_embeddings_batch(
+            vocabulary, batch_size=self.config.api_batch_size, show_progress=show_progress
+        )
+
+        vocab_matrix = torch.stack(vocab_embeddings).numpy()
+        vocab_matrix = vocab_matrix / np.linalg.norm(vocab_matrix, axis=1, keepdims=True)
+
+        codebook_vectors = self.learner.codebook().detach().numpy()
+        codebook_vectors = codebook_vectors / np.linalg.norm(codebook_vectors, axis=1, keepdims=True)
+
+        similarities = np.dot(codebook_vectors, vocab_matrix.T)
+
+        results = {}
+        for i in range(len(codebook_vectors)):
+            top_indices = np.argsort(similarities[i])[::-1][:top_k]
+            results[i] = [{"word": vocabulary[idx], "similarity": float(similarities[i][idx])} for idx in top_indices]
+
+        return results
 
     def save(self, path: str):
         """Save the trained system"""

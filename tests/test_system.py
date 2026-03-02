@@ -130,7 +130,7 @@ class TestIntegration:
 
         # Generate synthetic data and train briefly
         corpus = torch.randn(50, 64)
-        optimizer = torch.optim.Adam(system.learner.parameters(), lr=1e-3)
+        optimizer = torch.optim.SGD(system.learner.parameters(), lr=0.01, momentum=0.9)
 
         for _ in range(10):
             indices = torch.randperm(50)[:16]

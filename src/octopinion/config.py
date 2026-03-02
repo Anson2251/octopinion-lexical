@@ -15,8 +15,9 @@ class LexicalConfig:
     temperature_start: float = 5.0  # Initial temperature for Gumbel-Softmax
     temperature_end: float = 0.1  # Final temperature for Gumbel-Softmax
     temperature_decay: float = 0.995  # Temperature decay per epoch
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-3  # Learning rate for SGD
+    momentum: float = 0.9  # Momentum for SGD
     num_training_steps: int = 4  # Fixed steps for training (K in spec)
-    api_model: str = "BAAI/bge-large-zh-v1.5"
+    api_model: str = "BAAI/bge-large-en-v1.5"
     api_url: str = "https://api.siliconflow.cn/v1/embeddings"
-    api_batch_size: int = 10  # Batch size for API calls (SiliconFlow supports batch input)
+    api_batch_size: int = 30  # Batch size for API calls (SiliconFlow supports batch input)
