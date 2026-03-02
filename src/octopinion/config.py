@@ -1,0 +1,22 @@
+"""Octopinion Lexical System - Configuration"""
+
+from dataclasses import dataclass
+
+
+@dataclass
+class LexicalConfig:
+    """Configuration for the Lexical System"""
+
+    codebook_size: int = 64  # Number of syllables (should be power of 2 or octal-friendly)
+    embedding_dim: int = 1024  # Dimension of semantic vectors (matches BGE-large)
+    decay_factor: float = 0.5  # Lambda - positional weight decay
+    max_word_length: int = 5  # Maximum syllables per word
+    residual_threshold: float = 0.1  # Threshold for encoding termination
+    temperature_start: float = 5.0  # Initial temperature for Gumbel-Softmax
+    temperature_end: float = 0.1  # Final temperature for Gumbel-Softmax
+    temperature_decay: float = 0.995  # Temperature decay per epoch
+    learning_rate: float = 1e-3
+    num_training_steps: int = 4  # Fixed steps for training (K in spec)
+    api_model: str = "BAAI/bge-large-zh-v1.5"
+    api_url: str = "https://api.siliconflow.cn/v1/embeddings"
+    api_batch_size: int = 10  # Batch size for API calls (SiliconFlow supports batch input)

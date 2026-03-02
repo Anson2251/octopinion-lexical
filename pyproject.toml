@@ -1,0 +1,30 @@
+[project]
+name = "octopinion-lexical"
+version = "0.1.0"
+description = "Octopinion Lexical System - Vector Quantization-based encoding/decoding"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "numpy>=2.4.2",
+    "requests>=2.32.5",
+    "ruff>=0.15.4",
+    "torch>=2.10.0",
+]
+
+[project.scripts]
+octopinion = "octopinion.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/octopinion"]
+
+[tool.ruff]
+line-length = 120
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
