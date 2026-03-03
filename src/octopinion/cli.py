@@ -66,8 +66,12 @@ Examples:
         default=26,
         help="Codebook size (number of syllables)",
     )
-    train_parser.add_argument("--decay", "-d", type=float, default=LexicalConfig.decay_factor, help="Decay factor lambda")
-    train_parser.add_argument("--max-length", "-l", type=int, default=LexicalConfig.max_word_length, help="Maximum word length")
+    train_parser.add_argument(
+        "--decay", "-d", type=float, default=LexicalConfig.decay_factor, help="Decay factor lambda"
+    )
+    train_parser.add_argument(
+        "--max-length", "-l", type=int, default=LexicalConfig.max_word_length, help="Maximum word length"
+    )
     train_parser.add_argument(
         "--api-batch-size",
         type=int,
@@ -78,23 +82,20 @@ Examples:
 
     # Encode command
     encode_parser = subparsers.add_parser("encode", help="Encode text to syllable sequence")
-    encode_parser.add_argument("text", help="Text to encode")
+    encode_parser.add_argument("text", nargs="?", help="Text to encode (| to split, or use --file)")
     encode_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+    encode_parser.add_argument("--file", "-f", help="Input file (one text per line, for batch encoding)")
+    encode_parser.add_argument("--output", "-o", help="Output file (default: stdout)")
     encode_parser.add_argument("--api-token", help="SiliconFlow API token")
 
     # Decode command
     decode_parser = subparsers.add_parser("decode", help="Decode syllable sequence")
-    decode_parser.add_argument("sequence", help='Syllable sequence (comma-separated indices, e.g., "3,7,2,1")')
+    decode_parser.add_argument("sequence", nargs="?", help='Syllable sequence (e.g., "3,7,2,1") (or use --file)')
     decode_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+    decode_parser.add_argument("--file", "-i", help="Input file (one sequence per line, for batch decoding)")
+    decode_parser.add_argument("--output", "-o", help="Output file (default: stdout)")
     decode_parser.add_argument("--api-token", help="SiliconFlow API token")
     decode_parser.add_argument("--vocabulary", "-v", help="Path to vocabulary file (one word per line)")
-    decode_parser.add_argument(
-        "--output-format",
-        "-f",
-        choices=["vector", "summary"],
-        default="summary",
-        help="Output format",
-    )
 
     # Interactive command
     interactive_parser = subparsers.add_parser("interactive", help="Interactive mode")
@@ -185,23 +186,41 @@ def cmd_train(args):
 
 def cmd_encode(args):
     """Encode command"""
-    print("=" * 60)
-    print("Octopinion - Encoding")
-    print("=" * 60)
-
     # Load system
     api_token = args.api_token or os.getenv("SILICONFLOW_API_TOKEN")
     system = LexicalSystem.load(args.model, api_token)
 
-    # Encode
-    print(f"\nEncoding: '{args.text}'")
-    try:
-        sequence = system.encode_text(args.text)
-        word = system.sequence_to_string(sequence)
+    # Determine input source
+    texts = []
+    if args.file:
+        with open(args.file, "r", encoding="utf-8") as f:
+            texts = [line.strip() for line in f if line.strip()]
+    elif args.text:
+        texts = args.text.split("|")
+    else:
+        print("Error: Provide text as argument or use --file")
+        return 1
 
-        print(f"\nSyllable sequence: {sequence}")
-        print(f"Word form: {word}")
-        print(f"Length: {len(sequence)} syllables")
+    # Encode
+    try:
+        results = []
+        for text in texts:
+            sequence = system.encode_text(text)
+            results.append((text, sequence, system.sequence_to_string(sequence)))
+
+        # Output
+        output_lines = []
+        for text, sequence, word in results:
+            output_lines.append(f"{text}\t{sequence}\t{word}")
+
+        output_text = "\n".join(output_lines)
+
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output_text)
+            print(f"Encoded {len(texts)} texts. Results saved to {args.output}")
+        else:
+            print(output_text)
 
     except Exception as e:
         print(f"Error: {e}")
@@ -212,10 +231,6 @@ def cmd_encode(args):
 
 def cmd_decode(args):
     """Decode command"""
-    print("=" * 60)
-    print("Octopinion - Decoding")
-    print("=" * 60)
-
     # Load system
     api_token = args.api_token or os.getenv("SILICONFLOW_API_TOKEN")
     system = LexicalSystem.load(args.model, api_token)
@@ -223,36 +238,61 @@ def cmd_decode(args):
     # Load vocabulary if provided
     vocabulary = None
     if args.vocabulary:
-        print(f"\nLoading vocabulary from {args.vocabulary}...")
         with open(args.vocabulary, "r", encoding="utf-8") as f:
             vocabulary = [line.strip() for line in f if line.strip()]
-        print(f"Loaded {len(vocabulary)} words")
 
-    # Parse sequence
-    try:
-        sequence = [int(x.strip()) for x in args.sequence.split(",")]
-    except ValueError:
-        print("Error: Sequence must be comma-separated integers (e.g., '3,7,2,1')")
+    # Determine input source
+    sequences = []
+    if args.file:
+        with open(args.file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        seq = [int(x.strip()) for x in line.split(",")]
+                        sequences.append(seq)
+                    except ValueError:
+                        print(f"Warning: Skipping invalid sequence: {line}")
+    elif args.sequence:
+        try:
+            sequences = [[int(x.strip()) for x in args.sequence.split(",")]]
+        except ValueError:
+            print("Error: Sequence must be comma-separated integers (e.g., '3,7,2,1')")
+            return 1
+    else:
+        print("Error: Provide sequence as argument or use --file")
         return 1
-
-    print(f"\nDecoding sequence: {sequence}")
-    print(f"Word form: {system.sequence_to_string(sequence)}")
 
     # Decode
     try:
-        result = system.decode_to_text(sequence, vocabulary=vocabulary)
+        results = []
+        for sequence in sequences:
+            result = system.decode_to_text(sequence, vocabulary=vocabulary)
+            results.append(
+                {
+                    "sequence": sequence,
+                    "word": result["word"],
+                    "similarity": result["similarity"],
+                    "top_matches": result["all_words"][:5],
+                }
+            )
 
-        print(f"\nClosest match: {result['word']}")
-        print(f"Similarity: {result['similarity']:.4f}")
-        print(f"Vector norm: {torch.norm(result['vector']):.4f}")
+        # Output
+        output_lines = []
+        for r in results:
+            seq_str = ",".join(map(str, r["sequence"]))
+            top_words = ",".join([f"{w}:{s:.6f}" for w, s in r["top_matches"]])
+            output_lines.append(f"{seq_str}\t{r['word']}\t{r['similarity']:.6f}\t{top_words}")
 
-        print("\nTop 5 matches:")
-        for word, sim in result["all_words"][:5]:
-            print(f"  {word}: {sim:.4f}")
+        output_text = "\n".join(output_lines)
 
-        if args.output_format == "vector":
-            print(f"\nVector values:")
-            print(result["vector"].tolist())
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output_text)
+            print(f"Decoded {len(sequences)} sequences. Results saved to {args.output}")
+        else:
+            print("sequence\tword\tsimilarity\ttop_matches")
+            print(output_text)
 
     except Exception as e:
         print(f"Error: {e}")

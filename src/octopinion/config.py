@@ -1,13 +1,23 @@
 """Octopinion Lexical System - Configuration"""
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class InitMethod(Enum):
+    """Method for initializing codebook vectors"""
+
+    RANDOM = "random"
+    PRIMITIVES = "primitives"
+    PCA = "pca"
+    BALANCED_PCA = "balanced_pca"
 
 
 @dataclass
 class LexicalConfig:
     """Configuration for the Lexical System"""
 
-    codebook_size: int = 32  # Number of syllables (should be power of 2 or octal-friendly)
+    codebook_size: int = 64  # Number of syllables (should be power of 2 or octal-friendly)
     embedding_dim: int = 1024  # Dimension of semantic vectors (matches BGE-large)
     decay_factor: float = 0.5  # Lambda - positional weight decay
     max_word_length: int = 6  # Maximum syllables per word
@@ -21,3 +31,40 @@ class LexicalConfig:
     api_model: str = "BAAI/bge-large-en-v1.5"
     api_url: str = "https://api.siliconflow.cn/v1/embeddings"
     api_batch_size: int = 30  # Batch size for API calls (SiliconFlow supports batch input)
+    init_method: InitMethod = InitMethod.PRIMITIVES  # Method for initializing codebook vectors
+
+
+DEFAULT_PRIMITIVES = [
+    "opaque",
+    "hard",
+    "rough",
+    "big",
+    "near",
+    "deep",
+    "bright",
+    "warm",
+    "fast",
+    "enclosed",
+    "self",
+    "alive",
+    "dangerous",
+    "hidden",
+    "moving",
+    "grip",
+    "approach",
+    "active",
+    "edible",
+    "familiar",
+    "many",
+    "now",
+    "not",
+    "I",
+    "animal",
+    "interior",
+    "kin",
+    "abstract",
+    "confirmed",
+    "whole",
+    "vertical",
+    "dense",
+]

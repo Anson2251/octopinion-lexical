@@ -156,7 +156,6 @@ whale
 barracuda
 grouper
 ray
-bird
 predator
 enemy
 danger
@@ -504,3 +503,6 @@ minute
 hour
 month
 year
+I
+myself
+animal

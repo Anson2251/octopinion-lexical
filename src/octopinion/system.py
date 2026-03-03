@@ -6,49 +6,15 @@ import torch
 import numpy as np
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
-from .config import LexicalConfig
+from .config import LexicalConfig, InitMethod, DEFAULT_PRIMITIVES
 from .embedder import SiliconFlowEmbedding
 from .codebook import Codebook
 from .encoder import LexicalEncoder
 from .decoder import LexicalDecoder
-from .learner import CodebookLearner
+from .learner import CodebookLearner, compute_pca_init, compute_balanced_pca_init
 
 
 # Default primitive words for codebook initialization
-DEFAULT_PRIMITIVES = [
-    "fluid",
-    "hard",
-    "rough",
-    "big",
-    "near",
-    "deep",
-    "bright",
-    "warm",
-    "fast",
-    "enclosed",
-    "self",
-    "alive",
-    "dangerous",
-    "hidden",
-    "moving",
-    "grip",
-    "approach",
-    "passive",
-    "edible",
-    "familiar",
-    "many",
-    "now",
-    "cyclic",
-    "body",
-    "animal",
-    "interior",
-    "kin",
-    "abstract",
-    "tense",
-    "whole",
-    "vertical",
-    "dense"
-]
 
 
 class LexicalSystem:
@@ -73,17 +39,20 @@ class LexicalSystem:
         self.encoder = None  # Will be created after training
         self.decoder = None  # Will be created after training
         self.corpus = None  # Will store training corpus vocabulary
+        self._initialized = False  # Track if codebook has been initialized
 
-        # Auto-initialize with primitives if requested and API token available
-        if auto_initialize and use_primitives and self.embedder.api_token:
-            primitives_to_use = primitives if primitives is not None else DEFAULT_PRIMITIVES
-            # Only initialize if codebook_size matches
-            if len(primitives_to_use) == self.config.codebook_size:
-                try:
-                    self.initialize_from_primitives(primitives_to_use, verbose=False)
-                except Exception as e:
-                    # Silently fall back to random initialization if primitives fail
-                    pass
+        # Auto-initialize based on config.init_method if requested and API token available
+        if auto_initialize and self.embedder.api_token:
+            if self.config.init_method == InitMethod.PRIMITIVES and use_primitives:
+                primitives_to_use = primitives if primitives is not None else DEFAULT_PRIMITIVES
+                if len(primitives_to_use) == self.config.codebook_size:
+                    try:
+                        self.initialize_from_primitives(primitives_to_use, verbose=False)
+                        self._initialized = True
+                    except Exception as e:
+                        pass
+            elif self.config.init_method == InitMethod.PCA or self.config.init_method == InitMethod.BALANCED_PCA:
+                pass  # Will be initialized after training corpus is provided
 
     def initialize_from_primitives(self, primitives: List[str], verbose: bool = True):
         """
@@ -126,6 +95,48 @@ class LexicalSystem:
                 print(f"  [{i:2d}] {word}")
 
         return primitives
+
+    def initialize_from_pca(self, corpus: List[str], balanced: bool = False, verbose: bool = True):
+        """
+        Initialize codebook vectors using PCA on corpus embeddings.
+
+        Args:
+            corpus: List of text strings to use for PCA
+            balanced: If True, use Balanced PCA (cluster + PCA per cluster)
+            verbose: Whether to print progress
+
+        Returns:
+            Method used for initialization
+        """
+        if verbose:
+            method_name = "Balanced PCA" if balanced else "PCA"
+            print(f"Initializing codebook with {method_name} on {len(corpus)} corpus items...")
+
+        embeddings = self.embedder.get_embeddings_batch(
+            corpus, batch_size=self.config.api_batch_size, show_progress=verbose
+        )
+
+        if not embeddings:
+            raise RuntimeError("No valid embeddings retrieved. Cannot initialize codebook.")
+
+        embeddings_tensor = torch.stack(embeddings)
+
+        if balanced:
+            init_vectors = compute_balanced_pca_init(embeddings_tensor, self.config.codebook_size)
+            method = "balanced_pca"
+            method_name = "Balanced PCA"
+        else:
+            init_vectors = compute_pca_init(embeddings_tensor, self.config.codebook_size)
+            method = "pca"
+            method_name = "PCA"
+
+        self.learner.initialize_codebook_vectors(init_vectors)
+        self._initialized = True
+
+        if verbose:
+            print(f"Codebook initialized successfully with {method_name}!")
+
+        return method
 
     def encode_text(self, text: str) -> List[int]:
         """
@@ -274,6 +285,21 @@ class LexicalSystem:
         # Convert to tensor
         embeddings_tensor = torch.stack(embeddings)
 
+        # Initialize from PCA if configured and not already initialized
+        if not self._initialized:
+            if self.config.init_method == InitMethod.PCA:
+                if verbose:
+                    print(f"\nInitializing codebook with PCA...")
+                init_vectors = compute_pca_init(embeddings_tensor, self.config.codebook_size)
+                self.learner.initialize_codebook_vectors(init_vectors)
+                self._initialized = True
+            elif self.config.init_method == InitMethod.BALANCED_PCA:
+                if verbose:
+                    print(f"\nInitializing codebook with Balanced PCA...")
+                init_vectors = compute_balanced_pca_init(embeddings_tensor, self.config.codebook_size)
+                self.learner.initialize_codebook_vectors(init_vectors)
+                self._initialized = True
+
         # Setup optimizer (SGD with momentum)
         optimizer = torch.optim.SGD(
             self.learner.parameters(), lr=self.config.learning_rate, momentum=self.config.momentum
@@ -419,9 +445,9 @@ class LexicalSystem:
         # Register safe globals to allow loading LexicalConfig
         # Required for PyTorch 2.6+ weights_only=True default
         from torch.serialization import add_safe_globals
-        from .config import LexicalConfig
+        from .config import LexicalConfig, InitMethod
 
-        add_safe_globals([LexicalConfig])
+        add_safe_globals([LexicalConfig, InitMethod])
 
         checkpoint = torch.load(path, weights_only=True)
         config = checkpoint["config"]
@@ -438,5 +464,4 @@ class LexicalSystem:
         if "corpus" in checkpoint and checkpoint["corpus"] is not None:
             system.corpus = checkpoint["corpus"]
 
-        print(f"System loaded from {path}")
         return system

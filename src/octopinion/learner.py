@@ -3,11 +3,146 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple, Dict
-from .config import LexicalConfig
+import numpy as np
+from typing import List, Tuple, Dict, Optional
+from .config import LexicalConfig, InitMethod
 from .codebook import Codebook
 from .decoder import LexicalDecoder
 from .encoder import LexicalEncoder
+
+
+def compute_pca_init(embeddings: torch.Tensor, codebook_size: int) -> torch.Tensor:
+    """
+    Initialize codebook vectors using top-k principal components (PCA).
+
+    Args:
+        embeddings: Tensor of shape [n_samples, embedding_dim]
+        codebook_size: Number of codebook vectors to generate
+
+    Returns:
+        Tensor of shape [codebook_size, embedding_dim]
+    """
+    embeddings_np = embeddings.cpu().numpy()
+
+    mean = np.mean(embeddings_np, axis=0)
+    centered = embeddings_np - mean
+
+    cov = np.cov(centered, rowvar=False)
+
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+    idx = np.argsort(eigenvalues)[::-1]
+    eigenvectors = eigenvectors[:, idx]
+
+    top_k = eigenvectors[:, :codebook_size]
+
+    vectors = torch.from_numpy(top_k.T).float()
+
+    vectors = F.normalize(vectors, p=2, dim=1)
+
+    return vectors
+
+
+def _kmeans_simple(data: np.ndarray, k: int, max_iter: int = 50, seed: int = 42) -> np.ndarray:
+    """
+    Simple k-means implementation using numpy.
+
+    Args:
+        data: Data to cluster [n_samples, dim]
+        k: Number of clusters
+        max_iter: Maximum iterations
+        seed: Random seed
+
+    Returns:
+        Cluster centers [k, dim]
+    """
+    np.random.seed(seed)
+    n_samples = data.shape[0]
+
+    indices = np.random.choice(n_samples, k, replace=False)
+    centers = data[indices].copy()
+
+    for _ in range(max_iter):
+        distances = np.zeros((n_samples, k))
+        for j in range(k):
+            distances[:, j] = np.linalg.norm(data - centers[j], axis=1)
+
+        labels = np.argmin(distances, axis=1)
+
+        new_centers = np.zeros_like(centers)
+        for j in range(k):
+            cluster_points = data[labels == j]
+            if len(cluster_points) > 0:
+                new_centers[j] = cluster_points.mean(axis=0)
+            else:
+                new_centers[j] = centers[j]
+
+        if np.allclose(centers, new_centers):
+            break
+        centers = new_centers
+
+    return centers
+
+
+def compute_balanced_pca_init(embeddings: torch.Tensor, codebook_size: int) -> torch.Tensor:
+    """
+    Initialize codebook vectors using Balanced PCA.
+
+    This method:
+    1. Clusters the corpus embeddings into k balanced groups using k-means
+    2. Computes the first principal component within each cluster
+    3. Uses these as initial codebook vectors
+
+    This ensures the initial codebook vectors are representative of different
+    regions of the embedding space, providing better coverage than standard PCA.
+
+    Args:
+        embeddings: Tensor of shape [n_samples, embedding_dim]
+        codebook_size: Number of codebook vectors to generate
+
+    Returns:
+        Tensor of shape [codebook_size, embedding_dim]
+    """
+    embeddings_np = embeddings.cpu().numpy()
+
+    embeddings_np = embeddings_np / np.linalg.norm(embeddings_np, axis=1, keepdims=True)
+
+    cluster_centers = _kmeans_simple(embeddings_np, codebook_size, seed=42)
+
+    vectors_list = []
+    for i in range(codebook_size):
+        cluster_points = embeddings_np
+
+        distances = np.linalg.norm(cluster_points - cluster_centers[i], axis=1)
+        threshold = np.percentile(distances, 50)
+        mask = distances <= threshold
+
+        if mask.sum() > 1:
+            cluster_subset = cluster_points[mask]
+            mean = np.mean(cluster_subset, axis=0)
+            centered = cluster_subset - mean
+
+            cov = np.cov(centered, rowvar=False)
+
+            try:
+                eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                idx = np.argsort(eigenvalues)[::-1]
+                first_pc = eigenvectors[:, idx[0]]
+            except np.linalg.LinAlgError:
+                first_pc = cluster_centers[i]
+
+            first_pc = first_pc / np.linalg.norm(first_pc)
+        else:
+            first_pc = cluster_centers[i] / np.linalg.norm(cluster_centers[i])
+
+        vectors_list.append(first_pc)
+
+    vectors = np.stack(vectors_list)
+    vectors = torch.from_numpy(vectors).float()
+
+    vectors = F.normalize(vectors, p=2, dim=1)
+
+    return vectors
 
 
 class GumbelSoftmax(nn.Module):
