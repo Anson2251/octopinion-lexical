@@ -14,13 +14,57 @@ from .decoder import LexicalDecoder
 from .learner import CodebookLearner
 
 
+# Default primitive words for codebook initialization
+DEFAULT_PRIMITIVES = [
+    "fluid",
+    "hard",
+    "rough",
+    "big",
+    "near",
+    "deep",
+    "bright",
+    "warm",
+    "fast",
+    "enclosed",
+    "self",
+    "alive",
+    "dangerous",
+    "hidden",
+    "moving",
+    "grip",
+    "approach",
+    "passive",
+    "edible",
+    "familiar",
+    "many",
+    "now",
+    "cyclic",
+    "body",
+    "animal",
+    "interior",
+    "kin",
+    "abstract",
+    "tense",
+    "whole",
+    "vertical",
+    "dense"
+]
+
+
 class LexicalSystem:
     """
     Main interface for the Octopinion Lexical System.
     Integrates embedding API, encoding, decoding, and codebook learning.
     """
 
-    def __init__(self, config: Optional[LexicalConfig] = None, api_token: Optional[str] = None):
+    def __init__(
+        self,
+        config: Optional[LexicalConfig] = None,
+        api_token: Optional[str] = None,
+        use_primitives: bool = True,
+        primitives: Optional[List[str]] = None,
+        auto_initialize: bool = True,
+    ):
         self.config = config or LexicalConfig()
         self.embedder = SiliconFlowEmbedding(api_token, model=self.config.api_model)
 
@@ -28,6 +72,60 @@ class LexicalSystem:
         self.learner = CodebookLearner(self.config)
         self.encoder = None  # Will be created after training
         self.decoder = None  # Will be created after training
+        self.corpus = None  # Will store training corpus vocabulary
+
+        # Auto-initialize with primitives if requested and API token available
+        if auto_initialize and use_primitives and self.embedder.api_token:
+            primitives_to_use = primitives if primitives is not None else DEFAULT_PRIMITIVES
+            # Only initialize if codebook_size matches
+            if len(primitives_to_use) == self.config.codebook_size:
+                try:
+                    self.initialize_from_primitives(primitives_to_use, verbose=False)
+                except Exception as e:
+                    # Silently fall back to random initialization if primitives fail
+                    pass
+
+    def initialize_from_primitives(self, primitives: List[str], verbose: bool = True):
+        """
+        Initialize codebook vectors with semantic embeddings of primitive words.
+
+        Args:
+            primitives: List of primitive words to use for initialization.
+                       Must have exactly codebook_size words.
+            verbose: Whether to print progress
+
+        Returns:
+            List of primitive words used for initialization
+        """
+        if len(primitives) != self.config.codebook_size:
+            raise ValueError(
+                f"Number of primitives ({len(primitives)}) must match codebook_size ({self.config.codebook_size})"
+            )
+
+        if verbose:
+            print(f"Initializing codebook with {len(primitives)} primitive words...")
+
+        # Fetch embeddings for primitives
+        if verbose:
+            print(f"Fetching embeddings (API batch size: {self.config.api_batch_size})...")
+        embeddings = self.embedder.get_embeddings_batch(
+            primitives, batch_size=self.config.api_batch_size, show_progress=verbose
+        )
+
+        if not embeddings:
+            raise RuntimeError("No valid embeddings retrieved. Cannot initialize codebook.")
+
+        # Stack into tensor and initialize codebook
+        embeddings_tensor = torch.stack(embeddings)
+        self.learner.initialize_codebook_vectors(embeddings_tensor)
+
+        if verbose:
+            print(f"\nCodebook initialized successfully!")
+            print("\nPrimitive-to-index mapping:")
+            for i, word in enumerate(primitives):
+                print(f"  [{i:2d}] {word}")
+
+        return primitives
 
     def encode_text(self, text: str) -> List[int]:
         """
@@ -76,28 +174,58 @@ class LexicalSystem:
 
         Args:
             sequence: List of syllable indices
-            vocabulary: Optional list of words to search from. If None, uses cached embeddings.
+            vocabulary: Optional list of words to search from.
+                       If None, uses the training corpus vocabulary.
 
         Returns:
             Dictionary with decoded vector and closest word info
         """
         vector = self.decode_sequence(sequence)
 
-        if vocabulary:
-            embeddings = self.embedder.get_embeddings_batch(vocabulary, show_progress=False)
-            vocab_matrix = torch.stack(embeddings)
-            vocab_matrix = vocab_matrix / torch.norm(vocab_matrix, dim=1, keepdim=True)
+        # Determine vocabulary to use
+        if vocabulary is not None:
+            # Use provided vocabulary
+            search_vocab = vocabulary
+        elif self.corpus is not None:
+            # Use training corpus by default
+            search_vocab = self.corpus
         else:
+            # Fallback to cached embeddings (legacy behavior)
             cached = self.embedder.cache.get_all()
             if not cached:
-                raise ValueError("No cached embeddings found. Provide a vocabulary or train with a corpus first.")
-            vocabulary = [text for text, _ in cached]
-            vocab_matrix = torch.stack([emb for _, emb in cached])
+                raise ValueError("No vocabulary available. Train with a corpus first or provide a vocabulary.")
+            search_vocab = [text for text, _ in cached]
+            embeddings = [emb for _, emb in cached]
+            vocab_matrix = torch.stack(embeddings)
+            vocab_matrix = vocab_matrix / torch.norm(vocab_matrix, dim=1, keepdim=True)
+
+            # Compute similarities
+            vector_normalized = vector / torch.norm(vector)
+            similarities = torch.mm(vector_normalized.view(1, -1), vocab_matrix.t()).squeeze()
+            best_idx = similarities.argmax().item()
+            best_word = search_vocab[best_idx]
+            best_similarity = similarities[best_idx].item()
+
+            return {
+                "vector": vector,
+                "word": best_word,
+                "similarity": best_similarity,
+                "all_words": sorted(
+                    [(search_vocab[i], similarities[i].item()) for i in range(len(search_vocab))],
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:10],
+            }
+
+        # Fetch embeddings for the vocabulary
+        embeddings = self.embedder.get_embeddings_batch(search_vocab, show_progress=False)
+        vocab_matrix = torch.stack(embeddings)
+        vocab_matrix = vocab_matrix / torch.norm(vocab_matrix, dim=1, keepdim=True)
 
         vector_normalized = vector / torch.norm(vector)
         similarities = torch.mm(vector_normalized.view(1, -1), vocab_matrix.t()).squeeze()
         best_idx = similarities.argmax().item()
-        best_word = vocabulary[best_idx]
+        best_word = search_vocab[best_idx]
         best_similarity = similarities[best_idx].item()
 
         return {
@@ -105,7 +233,7 @@ class LexicalSystem:
             "word": best_word,
             "similarity": best_similarity,
             "all_words": sorted(
-                [(vocabulary[i], similarities[i].item()) for i in range(len(vocabulary))],
+                [(search_vocab[i], similarities[i].item()) for i in range(len(search_vocab))],
                 key=lambda x: x[1],
                 reverse=True,
             )[:10],
@@ -183,6 +311,9 @@ class LexicalSystem:
         # Create encoder/decoder after training
         self.encoder = LexicalEncoder(self.config, self.learner.codebook)
         self.decoder = LexicalDecoder(self.config, self.learner.codebook)
+
+        # Store the corpus vocabulary for decoding
+        self.corpus = list(dict.fromkeys(corpus))  # Remove duplicates while preserving order
 
         if verbose:
             print("\nTraining complete!")
@@ -276,6 +407,7 @@ class LexicalSystem:
                 "codebook_state": self.learner.codebook.state_dict(),
                 "encoder": self.encoder is not None,
                 "decoder": self.decoder is not None,
+                "corpus": self.corpus,
             },
             path,
         )
@@ -294,13 +426,17 @@ class LexicalSystem:
         checkpoint = torch.load(path, weights_only=True)
         config = checkpoint["config"]
 
-        system = cls(config, api_token)
+        system = cls(config, api_token, auto_initialize=False)
         system.learner.codebook.load_state_dict(checkpoint["codebook_state"])
 
         if checkpoint["encoder"]:
             system.encoder = LexicalEncoder(config, system.learner.codebook)
         if checkpoint["decoder"]:
             system.decoder = LexicalDecoder(config, system.learner.codebook)
+
+        # Restore corpus vocabulary if present
+        if "corpus" in checkpoint and checkpoint["corpus"] is not None:
+            system.corpus = checkpoint["corpus"]
 
         print(f"System loaded from {path}")
         return system

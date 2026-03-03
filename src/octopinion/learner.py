@@ -46,19 +46,40 @@ class CodebookLearner(nn.Module):
     Learning system for the codebook using Gumbel-Softmax and residual pursuit.
     """
 
-    def __init__(self, config: LexicalConfig):
+    def __init__(self, config: LexicalConfig, initial_vectors: torch.Tensor = None):
         super().__init__()
         self.config = config
         self.codebook = Codebook(config)
         self.gumbel_softmax = GumbelSoftmax(temperature=config.temperature_start)
         self.current_temperature = config.temperature_start
 
+        # Initialize codebook vectors if provided
+        if initial_vectors is not None:
+            self.initialize_codebook_vectors(initial_vectors)
+
         # Decoder for training
         self.decoder = LexicalDecoder(config, self.codebook)
 
-    def forward(
-        self, targets: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+    def initialize_codebook_vectors(self, vectors: torch.Tensor):
+        """
+        Initialize codebook vectors from a tensor of embeddings.
+
+        Args:
+            vectors: Tensor of shape [codebook_size, embedding_dim] containing
+                    initial codebook vectors (will be normalized)
+        """
+        if vectors.shape != (self.config.codebook_size, self.config.embedding_dim):
+            raise ValueError(
+                f"Expected vectors shape {(self.config.codebook_size, self.config.embedding_dim)}, got {vectors.shape}"
+            )
+
+        with torch.no_grad():
+            self.codebook.vectors.data = vectors.clone()
+            self.codebook.normalize_codebook()
+
+        print(f"Codebook initialized with {self.config.codebook_size} vectors")
+
+    def forward(self, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         """
         Forward pass with differentiable Gumbel-Softmax.
 
@@ -85,9 +106,7 @@ class CodebookLearner(nn.Module):
             logits = torch.matmul(residual, codebook_vecs.t())
 
             # Sample using Gumbel-Softmax
-            gumbel_dist = self.gumbel_softmax(
-                logits, hard=False
-            )  # [batch_size, codebook_size]
+            gumbel_dist = self.gumbel_softmax(logits, hard=False)  # [batch_size, codebook_size]
             selected_distributions.append(gumbel_dist)
 
             # Compute weighted contribution
@@ -111,9 +130,7 @@ class CodebookLearner(nn.Module):
 
         return reconstructed, total_loss, selected_distributions
 
-    def _compute_entropy_penalty(
-        self, distributions: List[torch.Tensor]
-    ) -> torch.Tensor:
+    def _compute_entropy_penalty(self, distributions: List[torch.Tensor]) -> torch.Tensor:
         """Compute entropy penalty to encourage peaky distributions"""
         total_entropy = torch.tensor(0.0)
         for dist in distributions:
@@ -130,9 +147,7 @@ class CodebookLearner(nn.Module):
         )
         self.gumbel_softmax.temperature = self.current_temperature
 
-    def train_step(
-        self, targets: torch.Tensor, optimizer: torch.optim.Optimizer
-    ) -> Dict[str, float]:
+    def train_step(self, targets: torch.Tensor, optimizer: torch.optim.Optimizer) -> Dict[str, float]:
         """Single training step"""
         self.train()
         optimizer.zero_grad()

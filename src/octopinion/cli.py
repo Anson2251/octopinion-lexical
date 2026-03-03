@@ -66,8 +66,8 @@ Examples:
         default=26,
         help="Codebook size (number of syllables)",
     )
-    train_parser.add_argument("--decay", "-d", type=float, default=0.5, help="Decay factor lambda")
-    train_parser.add_argument("--max-length", "-l", type=int, default=5, help="Maximum word length")
+    train_parser.add_argument("--decay", "-d", type=float, default=LexicalConfig.decay_factor, help="Decay factor lambda")
+    train_parser.add_argument("--max-length", "-l", type=int, default=LexicalConfig.max_word_length, help="Maximum word length")
     train_parser.add_argument(
         "--api-batch-size",
         type=int,

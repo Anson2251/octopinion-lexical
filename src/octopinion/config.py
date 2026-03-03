@@ -7,14 +7,14 @@ from dataclasses import dataclass
 class LexicalConfig:
     """Configuration for the Lexical System"""
 
-    codebook_size: int = 64  # Number of syllables (should be power of 2 or octal-friendly)
+    codebook_size: int = 32  # Number of syllables (should be power of 2 or octal-friendly)
     embedding_dim: int = 1024  # Dimension of semantic vectors (matches BGE-large)
     decay_factor: float = 0.5  # Lambda - positional weight decay
-    max_word_length: int = 5  # Maximum syllables per word
-    residual_threshold: float = 0.1  # Threshold for encoding termination
-    temperature_start: float = 5.0  # Initial temperature for Gumbel-Softmax
-    temperature_end: float = 0.1  # Final temperature for Gumbel-Softmax
-    temperature_decay: float = 0.995  # Temperature decay per epoch
+    max_word_length: int = 6  # Maximum syllables per word
+    residual_threshold: float = 0.01  # Threshold for encoding termination
+    temperature_start: float = 10.0  # Initial temperature for Gumbel-Softmax
+    temperature_end: float = 0.001  # Final temperature for Gumbel-Softmax
+    temperature_decay: float = 0.998  # Temperature decay per epoch
     learning_rate: float = 1e-3  # Learning rate for SGD
     momentum: float = 0.9  # Momentum for SGD
     num_training_steps: int = 4  # Fixed steps for training (K in spec)
