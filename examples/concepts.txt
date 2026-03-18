@@ -506,3 +506,13 @@ year
 I
 myself
 animal
+time
+second
+minute
+hour
+day
+week
+month
+year
+lifetime
+generation

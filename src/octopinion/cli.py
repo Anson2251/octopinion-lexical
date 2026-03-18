@@ -127,6 +127,17 @@ Examples:
     demo_parser.add_argument("--codebook-size", "-s", type=int, default=26, help="Codebook size")
     demo_parser.add_argument("--epochs", "-e", type=int, default=100, help="Training epochs")
 
+    # Batch encode command
+    batch_encode_parser = subparsers.add_parser(
+        "batch-encode", help="Encode vocabulary file to JSON with word-encoding pairs"
+    )
+    batch_encode_parser.add_argument(
+        "--vocabulary", "-v", required=True, help="Path to vocabulary file (one word per line)"
+    )
+    batch_encode_parser.add_argument("--model", "-m", required=True, help="Path to trained model")
+    batch_encode_parser.add_argument("--output", "-o", required=True, help="Output JSON file")
+    batch_encode_parser.add_argument("--api-token", help="SiliconFlow API token")
+
     # Cache command
     cache_parser = subparsers.add_parser("cache", help="Manage embedding cache")
     cache_parser.add_argument("--stats", action="store_true", help="Show cache statistics")
@@ -655,6 +666,50 @@ def cmd_cache(args):
     return 0
 
 
+def cmd_batch_encode(args):
+    """Batch encode command - encode vocabulary file to JSON"""
+    import json
+
+    print("=" * 60)
+    print("Octopinion - Batch Encode")
+    print("=" * 60)
+
+    # Load vocabulary
+    print(f"\nLoading vocabulary from {args.vocabulary}...")
+    with open(args.vocabulary, "r", encoding="utf-8") as f:
+        vocabulary = [line.strip() for line in f if line.strip()]
+    print(f"Loaded {len(vocabulary)} words")
+
+    # Load system
+    api_token = args.api_token or os.getenv("SILICONFLOW_API_TOKEN")
+    print(f"\nLoading model from {args.model}...")
+    system = LexicalSystem.load(args.model, api_token)
+
+    # Encode all words
+    print("\nEncoding words...")
+    results = {}
+    for word in tqdm(vocabulary, desc="Encoding"):
+        try:
+            sequence = system.encode_text(word)
+            results[word] = sequence
+        except Exception as e:
+            results[word] = {
+                "encoding": None,
+                "string": None,
+                "error": str(e),
+            }
+
+    # Save to JSON
+    print(f"\nSaving results to {args.output}...")
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    # Summary
+    print(f"Results saved to {args.output}")
+
+    return 0
+
+
 def main():
     """Main entry point"""
     parser = create_parser()
@@ -673,6 +728,7 @@ def main():
         "analyze": cmd_analyze,
         "export-codebook": cmd_export_codebook,
         "vocabulary": cmd_vocabulary,
+        "batch-encode": cmd_batch_encode,
         "demo": cmd_demo,
         "cache": cmd_cache,
     }

@@ -31,7 +31,7 @@ class LexicalDecoder:
 
         for j, idx in enumerate(sequence):
             syllable_vec = self.codebook.get_vector(idx)
-            weight = self.config.decay_factor**j
+            weight = self.config.decay_factor**(j+1)
             meaning += weight * syllable_vec
 
         return meaning

@@ -316,6 +316,7 @@ class LexicalSystem:
             # Shuffle data
             indices = torch.randperm(dataset_size)
             total_loss = 0
+            total_recon_loss = 0
             num_batches = 0
             last_metrics = None
 
@@ -325,14 +326,19 @@ class LexicalSystem:
 
                 metrics = self.learner.train_step(batch, optimizer)
                 total_loss += metrics["loss"]
+                total_recon_loss += metrics["reconstruction_loss"]
                 num_batches += 1
                 last_metrics = metrics
 
             avg_loss = total_loss / num_batches
+            avg_recon_loss = total_recon_loss / num_batches
 
             if verbose:
                 temp = last_metrics["temperature"] if last_metrics else 0.0
-                epoch_range.set_postfix(loss=f"{avg_loss:.4f}", temp=f"{temp:.2f}")
+                epoch_range.set_postfix(loss=f"{avg_loss:.4f}", recon_loss=f"{avg_recon_loss:.4f}", temp=f"{temp:.2f}")
+
+        # Final reconstruction loss
+        final_recon_loss = avg_recon_loss
 
         # Create encoder/decoder after training
         self.encoder = LexicalEncoder(self.config, self.learner.codebook)
@@ -342,7 +348,7 @@ class LexicalSystem:
         self.corpus = list(dict.fromkeys(corpus))  # Remove duplicates while preserving order
 
         if verbose:
-            print("\nTraining complete!")
+            print(f"\nTraining complete! Final reconstruction loss: {final_recon_loss:.6f}")
 
     def encode_corpus(self, corpus: List[str]) -> Dict[str, List[int]]:
         """
@@ -403,11 +409,15 @@ class LexicalSystem:
         if not vocabulary:
             raise ValueError("Vocabulary cannot be empty")
 
+        unique_vocab = list(dict.fromkeys(vocabulary))
+        if len(unique_vocab) < len(vocabulary):
+            print(f"Warning: Removed {len(vocabulary) - len(unique_vocab)} duplicate words from vocabulary")
+
         if show_progress:
-            print(f"Getting embeddings for {len(vocabulary)} vocabulary words...")
+            print(f"Getting embeddings for {len(unique_vocab)} vocabulary words...")
 
         vocab_embeddings = self.embedder.get_embeddings_batch(
-            vocabulary, batch_size=self.config.api_batch_size, show_progress=show_progress
+            unique_vocab, batch_size=self.config.api_batch_size, show_progress=show_progress
         )
 
         vocab_matrix = torch.stack(vocab_embeddings).numpy()
@@ -421,7 +431,16 @@ class LexicalSystem:
         results = {}
         for i in range(len(codebook_vectors)):
             top_indices = np.argsort(similarities[i])[::-1][:top_k]
-            results[i] = [{"word": vocabulary[idx], "similarity": float(similarities[i][idx])} for idx in top_indices]
+            seen_words = set()
+            unique_results = []
+            for idx in top_indices:
+                word = unique_vocab[idx]
+                if word not in seen_words:
+                    seen_words.add(word)
+                    unique_results.append({"word": word, "similarity": float(similarities[i][idx])})
+                if len(unique_results) >= top_k:
+                    break
+            results[i] = unique_results
 
         return results
 

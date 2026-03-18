@@ -62,6 +62,7 @@ class SiliconFlowEmbedding:
         Returns:
             Embedding tensor
         """
+        text = text.strip()
         should_cache = use_cache if use_cache is not None else self.use_cache
 
         # Check cache first
@@ -109,6 +110,8 @@ class SiliconFlowEmbedding:
         """
         if not texts:
             return []
+
+        texts = [i.strip() for i in texts]
 
         should_cache = use_cache if use_cache is not None else self.use_cache
 

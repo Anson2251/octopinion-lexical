@@ -214,7 +214,7 @@ class CodebookLearner(nn.Module):
 
         print(f"Codebook initialized with {self.config.codebook_size} vectors")
 
-    def forward(self, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+    def forward(self, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         """
         Forward pass with differentiable Gumbel-Softmax.
 
@@ -223,9 +223,9 @@ class CodebookLearner(nn.Module):
         Returns:
             - reconstructed: [batch_size, embedding_dim]
             - loss: scalar reconstruction loss
+            - reconstruction_loss: scalar MSE reconstruction loss
             - selected_indices: List of Gumbel-softmax distributions per step
         """
-        batch_size = targets.size(0)
         device = targets.device
 
         # Initialize
@@ -248,7 +248,7 @@ class CodebookLearner(nn.Module):
             # [batch_size, codebook_size] @ [codebook_size, embedding_dim] = [batch_size, embedding_dim]
             weighted_vectors = torch.matmul(gumbel_dist, codebook_vecs)
 
-            decay = self.config.decay_factor**step
+            decay = self.config.decay_factor**(step+1)
             contribution = decay * weighted_vectors
 
             # Update
@@ -260,10 +260,11 @@ class CodebookLearner(nn.Module):
 
         # Optional: entropy penalty to encourage peaky distributions
         entropy_penalty = self._compute_entropy_penalty(selected_distributions)
+        orthogonal_penalty = self.orthogonal_penalty()
 
-        total_loss = reconstruction_loss + 0.01 * entropy_penalty
+        total_loss = reconstruction_loss + orthogonal_penalty * 0.1 + entropy_penalty * 0.01
 
-        return reconstructed, total_loss, selected_distributions
+        return reconstructed, total_loss, reconstruction_loss, selected_distributions
 
     def _compute_entropy_penalty(self, distributions: List[torch.Tensor]) -> torch.Tensor:
         """Compute entropy penalty to encourage peaky distributions"""
@@ -273,6 +274,14 @@ class CodebookLearner(nn.Module):
             entropy = -torch.sum(dist * torch.log(dist + 1e-10), dim=-1)
             total_entropy = total_entropy + entropy.mean()
         return total_entropy / float(len(distributions))
+
+    def orthogonal_penalty(self) -> torch.Tensor:
+        """Optional penalty to encourage orthogonality of codebook vectors"""
+        codebook_vecs = self.codebook().t()  # [embedding_dim, codebook_size]
+        similarity_matrix = torch.matmul(codebook_vecs.t(), codebook_vecs)  # [codebook_size, codebook_size]
+        identity = torch.eye(self.config.codebook_size, device=similarity_matrix.device)
+        penalty = F.mse_loss(similarity_matrix, identity)
+        return penalty
 
     def update_temperature(self):
         """Decay temperature for annealing"""
@@ -287,7 +296,7 @@ class CodebookLearner(nn.Module):
         self.train()
         optimizer.zero_grad()
 
-        reconstructed, loss, _ = self.forward(targets)
+        reconstructed, loss, reconstruction_loss, _ = self.forward(targets)
         loss.backward()
 
         # Normalize codebook after gradient update
@@ -297,7 +306,11 @@ class CodebookLearner(nn.Module):
         # Update temperature
         self.update_temperature()
 
-        return {"loss": loss.item(), "temperature": self.current_temperature}
+        return {
+            "loss": loss.item(),
+            "reconstruction_loss": reconstruction_loss.item(),
+            "temperature": self.current_temperature,
+        }
 
     def get_discrete_sequence(self, target: torch.Tensor) -> List[int]:
         """Get discrete sequence using trained codebook (inference)"""

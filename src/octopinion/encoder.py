@@ -49,7 +49,7 @@ class LexicalEncoder(nn.Module):
             sequence.append(best_idx)
 
             # Update residual
-            decay = self.config.decay_factor**step
+            decay = self.config.decay_factor**(step+1)
             contribution = decay * codebook_vecs[best_idx]
             residual = residual - contribution
 
