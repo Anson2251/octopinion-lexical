@@ -19,7 +19,7 @@ class LexicalConfig:
 
     codebook_size: int = 64  # Number of syllables (should be power of 2 or octal-friendly)
     embedding_dim: int = 1024  # Dimension of semantic vectors (matches BGE-large)
-    decay_factor: float = 0.50414  # Lambda - positional weight decay
+    decay_factor: float = 0.7  # Lambda - positional weight decay
     max_word_length: int = 6  # Maximum syllables per word
     residual_threshold: float = 0.05  # Threshold for encoding termination
     temperature_start: float = 10.0  # Initial temperature for Gumbel-Softmax
@@ -32,6 +32,7 @@ class LexicalConfig:
     api_url: str = "https://api.siliconflow.cn/v1/embeddings"
     api_batch_size: int = 30  # Batch size for API calls (SiliconFlow supports batch input)
     init_method: InitMethod = InitMethod.PRIMITIVES  # Method for initializing codebook vectors
+    allow_negative_signs: bool = True  # Allow negative decay factors (signed syllables)
 
 
 DEFAULT_PRIMITIVES = [

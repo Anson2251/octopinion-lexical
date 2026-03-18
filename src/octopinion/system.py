@@ -251,8 +251,20 @@ class LexicalSystem:
         }
 
     def sequence_to_string(self, sequence: List[int]) -> str:
-        """Convert syllable sequence to human-readable string"""
-        return "-".join(f"S{i}" for i in sequence)
+        """Convert syllable sequence to human-readable string.
+
+        Supports signed sequences where negative indices indicate negative contribution.
+        Negative indices are displayed as -S1, -S2, etc.
+        """
+        parts = []
+        for signed_idx in sequence:
+            if signed_idx < 0:
+                # Negative index: subtract sign, use absolute value for display
+                actual_idx = abs(signed_idx) - 1
+                parts.append(f"-S{actual_idx}")
+            else:
+                parts.append(f"S{signed_idx}")
+        return "-".join(parts)
 
     def train(
         self,

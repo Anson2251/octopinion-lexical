@@ -181,7 +181,7 @@ class CodebookLearner(nn.Module):
     Learning system for the codebook using Gumbel-Softmax and residual pursuit.
     """
 
-    def __init__(self, config: LexicalConfig, initial_vectors: torch.Tensor = None):
+    def __init__(self, config: LexicalConfig, initial_vectors: torch.Tensor | None = None):
         super().__init__()
         self.config = config
         self.codebook = Codebook(config)
@@ -217,6 +217,7 @@ class CodebookLearner(nn.Module):
     def forward(self, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         """
         Forward pass with differentiable Gumbel-Softmax.
+        Supports signed sequences when allow_negative_signs is enabled.
 
         Args:
             targets: Batch of target vectors [batch_size, embedding_dim]
@@ -236,19 +237,47 @@ class CodebookLearner(nn.Module):
         codebook_vecs = self.codebook().to(device)  # [codebook_size, embedding_dim]
 
         for step in range(self.config.num_training_steps):
-            # Compute logits (dot products)
-            # [batch_size, codebook_size]
-            logits = torch.matmul(residual, codebook_vecs.t())
+            # Compute residual norm for normalization
+            residual_norm = torch.norm(residual, dim=1, keepdim=True).clamp(min=1e-8)
+            residual_normalized = residual / residual_norm
 
-            # Sample using Gumbel-Softmax
-            gumbel_dist = self.gumbel_softmax(logits, hard=False)  # [batch_size, codebook_size]
-            selected_distributions.append(gumbel_dist)
+            if self.config.allow_negative_signs:
+                # Use cosine similarity for direction-based selection
+                # logits_pos = cos(residual_normalized, v_i) = dot(residual_normalized, v_i)
+                # since ||v_i|| = 1 (codebook vectors are normalized)
 
-            # Compute weighted contribution
-            # [batch_size, codebook_size] @ [codebook_size, embedding_dim] = [batch_size, embedding_dim]
-            weighted_vectors = torch.matmul(gumbel_dist, codebook_vecs)
+                logits_pos = torch.matmul(residual_normalized, codebook_vecs.t())  # [batch_size, codebook_size]
 
-            decay = self.config.decay_factor**(step+1)
+                # Concatenate positive and negative logits
+                # First half: positive contributions, second half: negative contributions
+                # logits_neg = cos(residual_normalized, -v_i) = -cos(residual_normalized, v_i)
+                logits = torch.cat([logits_pos, -logits_pos], dim=1)  # [batch_size, 2*codebook_size]
+
+                # Sample using Gumbel-Softmax from doubled codebook
+                gumbel_dist = self.gumbel_softmax(logits, hard=False)  # [batch_size, 2*codebook_size]
+
+                # Split into positive and negative parts
+                gumbel_pos = gumbel_dist[:, : self.config.codebook_size]  # [batch_size, codebook_size]
+                gumbel_neg = gumbel_dist[:, self.config.codebook_size :]  # [batch_size, codebook_size]
+
+                # Compute contribution: pos_dist @ codebook - neg_dist @ codebook
+                weighted_vectors = torch.matmul(gumbel_pos, codebook_vecs) - torch.matmul(gumbel_neg, codebook_vecs)
+
+                # Store combined distribution for entropy computation
+                selected_distributions.append(gumbel_dist)
+            else:
+                # Original behavior: use cosine similarity (dot product with normalized residual)
+                # Since codebook vectors are already normalized, this is cosine similarity
+                logits = torch.matmul(residual_normalized, codebook_vecs.t())
+
+                # Sample using Gumbel-Softmax
+                gumbel_dist = self.gumbel_softmax(logits, hard=False)  # [batch_size, codebook_size]
+                selected_distributions.append(gumbel_dist)
+
+                # Compute weighted contribution
+                weighted_vectors = torch.matmul(gumbel_dist, codebook_vecs)
+
+            decay = self.config.decay_factor ** (step + 1)
             contribution = decay * weighted_vectors
 
             # Update
