@@ -20,7 +20,7 @@ class LexicalConfig:
     codebook_size: int = 64  # Number of syllables (should be power of 2 or octal-friendly)
     embedding_dim: int = 1024  # Dimension of semantic vectors (matches BGE-large)
     decay_factor: float = 0.7  # Lambda - positional weight decay
-    max_word_length: int = 6  # Maximum syllables per word
+    max_word_length: int = 5  # Maximum syllables per word
     residual_threshold: float = 0.05  # Threshold for encoding termination
     temperature_start: float = 10.0  # Initial temperature for Gumbel-Softmax
     temperature_end: float = 0.001  # Final temperature for Gumbel-Softmax
@@ -36,14 +36,11 @@ class LexicalConfig:
 
 
 DEFAULT_PRIMITIVES = [
-    "opaque",
     "hard",
-    "rough",
     "big",
     "near",
     "deep",
     "bright",
-    "warm",
     "fast",
     "enclosed",
     "self",
@@ -51,21 +48,12 @@ DEFAULT_PRIMITIVES = [
     "dangerous",
     "hidden",
     "moving",
-    "grip",
     "approach",
     "active",
-    "edible",
     "familiar",
     "many",
     "now",
-    "not",
-    "I",
     "animal",
-    "interior",
-    "kin",
-    "abstract",
-    "confirmed",
     "whole",
-    "vertical",
     "dense",
 ]

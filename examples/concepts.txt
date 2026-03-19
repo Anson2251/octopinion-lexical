@@ -516,3 +516,10 @@ month
 year
 lifetime
 generation
+language
+speak
+conversation
+after
+before
+past
+ago

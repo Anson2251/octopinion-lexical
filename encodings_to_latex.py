@@ -51,18 +51,18 @@ def generate_latex(encodings):
         r"\begin{document}",
         r"",
         r"\appendix",
-        r"\section*{Appendix: Word Encodings (6‑Syllable IDs)}",
+        r"\section*{Appendix: Word Encodings (5‑Syllable IDs)}",
         r"",
         r"\begin{multicols}{2}",
         r"\tablehead{",
         r"\toprule",
-        r"\textbf{Word} & \textbf{S1} & \textbf{S2} & \textbf{S3} & \textbf{S4} & \textbf{S5} & \textbf{S6} \\",
+        r"\textbf{Word} & \textbf{S1} & \textbf{S2} & \textbf{S3} & \textbf{S4} & \textbf{S5} \\",
         r"\midrule",
         r"}",
         r"\tabletail{",
         r"\bottomrule",
         r"}",
-        r"\begin{supertabular}{l*{6}{c}}",
+        r"\begin{supertabular}{l*{5}{c}}",
     ]
 
     # Sort words alphabetically, case-insensitive
@@ -70,12 +70,12 @@ def generate_latex(encodings):
 
     for word in sorted_words:
         ids = encodings[word]
-        if len(ids) > 6:
-            print(f"Warning: {word} has {len(ids)} IDs, truncating to 6", file=sys.stderr)
-            ids = ids[:6]
-        # Ensure we have exactly 6 cells (pad with empty string if fewer)
+        if len(ids) > 5:
+            print(f"Warning: {word} has {len(ids)} IDs, truncating to 5", file=sys.stderr)
+            ids = ids[:5]
+        # Ensure we have exactly 5 cells (pad with empty string if fewer)
         cells = [str(i) for i in ids]
-        while len(cells) < 6:
+        while len(cells) < 5:
             cells.append("")
         escaped_word = escape_latex(word)
         id_cells = " & ".join(cells)

@@ -16,7 +16,7 @@ class TestConfig:
         assert config.codebook_size == 64
         assert config.embedding_dim == 1024
         assert config.decay_factor == 0.7
-        assert config.max_word_length == 6
+        assert config.max_word_length == 5
         assert config.allow_negative_signs == True
 
 

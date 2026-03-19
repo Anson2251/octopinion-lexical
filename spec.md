@@ -29,10 +29,15 @@ The set $\{\mathbf{v}i\}{i=1}^n$ is the **codebook** of the language.
 A word $W$ is a finite sequence of syllables $\langle s_{i_1}, s_{i_2}, \dots, s_{i_k}\rangle$. Its meaning is the weighted sum of their semantic vectors:
 
 $$
-\text{meaning}(W) = \sum_{j=1}^{k} \lambda^{j-1} \mathbf{v}_{i_j}
+\text{meaning}(W) = \sum_{j=1}^{k} \text{sign}(i_j) \cdot \lambda^{j-1} \cdot \mathbf{v}_{|i_j|}
 $$
 
-where $\lambda \in (0,1)$ is the **decay factor**, a language-wide constant. The default value is $\lambda = 0.5$ (or $1\over8$ for strict octal alignment).
+where:
+- $\lambda \in (0,1)$ is the **decay factor**, a language-wide constant. The default value is $\lambda = 0.5$ (or $1\over8$ for strict octal alignment).
+- $\text{sign}(i_j) \in \{-1, +1\}$ is the **sign** of the syllable, determined by the encoding algorithm based on direction alignment.
+- $|i_j|$ denotes the absolute syllable index (converting negative indices to positive: e.g., $-1 \rightarrow 0$, $-2 \rightarrow 1$).
+
+**Negative syllables**: The encoding algorithm may produce negative indices (e.g., $-1, -2, -5$), indicating that the corresponding syllable vector should be **subtracted** rather than added. This allows encoding concepts that require opposition or negation (e.g., "not-fish", "un-happy").
 
 ### Axiom 4: Order Matters
 
@@ -72,7 +77,7 @@ The choice of learned, latent dimensions is deliberate:
 
 ## 4. Word Formation: The Encoding Algorithm
 
-Given a target concept with semantic vector $\mathbf{t} \in \mathbb{R}^d$ (in the learned semantic space), the language produces a word—a sequence of syllables—through a **greedy residual pursuit** algorithm.
+Given a target concept with semantic vector $\mathbf{t} \in \mathbb{R}^d$ (in the learned semantic space), the language produces a word—a sequence of syllables—through a **greedy residual pursuit** algorithm using **cosine similarity** for direction-based selection.
 
 ### 4.1 The Algorithm
 
@@ -82,18 +87,33 @@ function encode(target_vector t):
     sequence = []
     step = 0
     while norm(residual) > threshold and step < max_steps:
-        # Find the syllable that best reduces the residual
-        # The decay factor λ^(step) scales the contribution
-        # but cancels out in the argmax
-        scores = [dot(residual, v_i) for v_i in codebook]
-        best_index = argmax(scores)
+        # Normalize residual for direction comparison
+        r_norm = normalize(residual)
+        
+        # Compute cosine similarities with all codebook vectors
+        # cos_sim(r, v_i) = dot(r_norm, v_i) since ||v_i|| = 1
+        scores = [dot(r_norm, v_i) for v_i in codebook]
+        
+        # Find syllable with maximum absolute cosine similarity
+        abs_scores = [abs(s) for s in scores]
+        best_index = argmax(abs_scores)
+        best_score = scores[best_index]
+        
+        # Determine sign based on direction alignment
+        # If best_score > 0: vector points same direction as residual → use +sign
+        # If best_score < 0: vector points opposite → use -sign (flip direction)
+        if best_score >= 0:
+            signed_index = best_index
+        else:
+            signed_index = -(best_index + 1)  # negative encoding
 
         # Add to sequence
-        sequence.append(best_index)
+        sequence.append(signed_index)
 
-        # Update residual: subtract the contribution of this syllable
-        # scaled by the positional weight
-        contribution = λ^step * codebook[best_index]
+        # Update residual: subtract the signed contribution
+        actual_index = abs(signed_index) - 1 if signed_index < 0 else signed_index
+        sign = -1 if signed_index < 0 else +1
+        contribution = sign * λ^step * codebook[actual_index]
         residual = residual - contribution
 
         step += 1
@@ -103,13 +123,19 @@ function encode(target_vector t):
 
 ### 4.2 Why Greedy Works
 
-At each step, we choose the syllable that maximises $\mathbf{v}_i \cdot \mathbf{r}$, where $\mathbf{r}$ is the current residual. This minimizses $\|\mathbf{r} - \lambda^{\text{step}} \mathbf{v}_i\|^2$ because:
+At each step, we choose the syllable that maximises $|\cos(\mathbf{r}, \mathbf{v}_i)|$, where $\mathbf{r}$ is the current residual. The cosine similarity measures directional alignment:
 
 $$
-\|\mathbf{r} - \lambda^{\text{step}} \mathbf{v}_i\|^2 = \|\mathbf{r}\|^2 + {\lambda^{\text{step}}}^2 - 2\lambda^{\text{step}} (\mathbf{v}_i \cdot \mathbf{r})
+\cos(\mathbf{r}, \mathbf{v}_i) = \frac{\mathbf{r} \cdot \mathbf{v}_i}{\|\mathbf{r}\| \|\mathbf{v}_i\|} = \frac{\mathbf{r} \cdot \mathbf{v}_i}{\|\mathbf{r}\|}
 $$
 
-Since $\lambda^{\text{step}}$ is positive and constant for the given step, maximising the dot product minimises the norm.
+(since $\|\mathbf{v}_i\| = 1$).
+
+**Sign Selection**: The sign is chosen based on the cosine value:
+- If $\cos(\mathbf{r}, \mathbf{v}_i) > 0$: the vector points in the same direction as the residual → use **positive** sign
+- If $\cos(\mathbf{r}, \mathbf{v}_i) < 0$: the vector points opposite to the residual → use **negative** sign (flip direction)
+
+This ensures each contribution pushes the reconstruction toward the target direction, preventing the algorithm from oscillating between adding and subtracting the same syllable.
 
 ### 4.3 Termination
 
@@ -124,13 +150,22 @@ If terminated by length limit, the word is an approximation of the target concep
 
 ## 5. Decoding: From Word to Meaning
 
-Given a word $W = \langle s_{i_1}, s_{i_2}, \dots, s_{i_k}\rangle$, its meaning is computed deterministically:
+Given a word $W = \langle s_{i_1}, s_{i_2}, \dots, s_{i_k}\rangle$ where indices may be **signed** (negative for subtraction, positive for addition), its meaning is computed deterministically:
 
 $$
-\text{decode}(W) = \sum_{j=1}^{k} \lambda^{j-1} \mathbf{v}_{i_j}
+\text{decode}(W) = \sum_{j=1}^{k} \text{sign}(i_j) \cdot \lambda^{j-1} \cdot \mathbf{v}_{|i_j|}
 $$
 
-This is a **linear composition**. The result is a point in semantic space that approximates some concept.
+where:
+- $\text{sign}(i_j) = +1$ if $i_j \geq 0$, and $-1$ if $i_j < 0$
+- $|i_j|$ converts negative indices to positive (e.g., $-1 \rightarrow 0$, $-2 \rightarrow 1$)
+
+This is a **linear composition** with signed contributions. The result is a point in semantic space that approximates some concept.
+
+**Signed Sequence Notation**: 
+- Positive indices: $[0, 3, 5]$ → S0-S3-S5
+- Negative indices: $[-1, -4]$ represents syllables 0 and 3 with negative signs → -S0--S3
+- Mixed: $[2, -3, 5]$ → S2--S2-S5
 
 ### 5.1 Similarity and Interpretation
 
@@ -165,9 +200,13 @@ To make the codebook learnable, we relax the discrete selection process using **
 
 1. Initialise residual $\mathbf{r} = \mathbf{t}$.
 2. For step $k = 0$ to $K-1$ (where $K$ is a fixed maximum, e.g., 4):
-    - Compute logits: $\text{logits}_i = \mathbf{v}_i \cdot \mathbf{r}$ for all $i$.
+    - **Compute cosine similarity logits**: $\text{logits}_i = \cos(\mathbf{r}, \mathbf{v}_i) = \frac{\mathbf{r} \cdot \mathbf{v}_i}{\|\mathbf{r}\|}$ for all $i$.
+    - **Support signed syllables**: When `allow_negative_signs` is enabled, double the effective codebook by considering both $+\mathbf{v}_i$ and $-\mathbf{v}_i$:
+        - Positive logits: $\text{logits}^{+}_i = \cos(\mathbf{r}, \mathbf{v}_i)$
+        - Negative logits: $\text{logits}^{-}_i = \cos(\mathbf{r}, -\mathbf{v}_i) = -\cos(\mathbf{r}, \mathbf{v}_i)$
+        - Combined logits: $[\text{logits}^{+}, \text{logits}^{-}]$ of length $2n$
     - Sample a one-hot vector $\mathbf{g}^{(k)} \sim \text{Gumbel-Softmax}(\text{logits}, \tau)$, where $\tau$ is temperature.
-    - Compute contribution: $\mathbf{c}^{(k)} = \lambda^k \sum_i g_i^{(k)} \mathbf{v}_i$.
+    - Compute contribution with sign: $\mathbf{c}^{(k)} = \lambda^k \left(\sum_{i=0}^{n-1} g_i^{+} \mathbf{v}_i - \sum_{i=0}^{n-1} g_i^{-} \mathbf{v}_i\right)$.
     - Update residual: $\mathbf{r} \leftarrow \mathbf{r} - \mathbf{c}^{(k)}$.
     - Store $\mathbf{g}^{(k)}$.
 3. After $K$ steps, compute reconstruction:
@@ -211,6 +250,18 @@ Thus, words longer than 4–5 syllables add negligible precision.
 ### 7.3 Learning $\lambda$
 
 Optionally, $\lambda$ can be treated as a learnable parameter during codebook training, allowing the language to find its optimal decay rate.
+
+### 7.4 Sign Determination
+
+The **sign** of each syllable contribution is determined during encoding based on **directional alignment**:
+
+1. At each step, compute cosine similarity: $\cos(\mathbf{r}, \mathbf{v}_i) = \frac{\mathbf{r} \cdot \mathbf{v}_i}{\|\mathbf{r}\|}$
+2. Find the syllable with maximum absolute cosine similarity: $i^* = \arg\max_i |\cos(\mathbf{r}, \mathbf{v}_i)|$
+3. Determine sign:
+   - If $\cos(\mathbf{r}, \mathbf{v}_{i^*}) \geq 0$: use **positive** sign (syllable index $i^*$)
+   - If $\cos(\mathbf{r}, \mathbf{v}_{i^*}) < 0$: use **negative** sign (syllable index $-(i^* + 1)$)
+
+This approach ensures that each syllable contribution pushes the reconstruction in the direction of the target vector, rather than oscillating between adding and subtracting components.
 
 ---
 
@@ -329,9 +380,13 @@ $$
 \epsilon(\mathbf{t}) = \text{greedy\_pursuit}(\mathbf{t}, \mathbf{V}, \lambda, \epsilon, L{\max})
 $$
 
+where the greedy pursuit uses **cosine similarity** for direction-based selection and supports **signed syllables** for encoding opposition and negation.
+
 **Properties**:
 
 - $\mu \circ \epsilon$ approximates identity for concepts in the training distribution.
-- The system is **compositional**: meaning of a word is the weighted sum of its parts.
+- The system is **compositional**: meaning of a word is the weighted sum of its parts, with signs determining addition or subtraction.
 - The system is **hierarchical**: earlier syllables dominate.
-- The system is **learned**: the codebook $\mathbf{V}$ is optimized via differentiable training, and the semantic space is also learned from data.
+- The system is **directional**: cosine similarity ensures each contribution pushes toward the target direction.
+- The system is **signed**: negative indices allow encoding opposition and negation.
+- The system is **learned**: the codebook $\mathbf{V}$ is optimized via differentiable training with cosine similarity logits, and the semantic space is also learned from data.
